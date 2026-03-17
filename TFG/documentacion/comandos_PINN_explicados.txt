@@ -1,0 +1,280 @@
+PINN (Physics-Informed Neural Network) — “comandos” esenciales (con explicación)
+================================================================================
+
+Objetivo (ejemplo típico):
+  Resolver una EDO/PDE imponiendo la ecuación física en la función de pérdida,
+  y además condiciones iniciales/de contorno, usando autodiff (derivadas automáticas).
+
+Este documento está pensado para que tengas TODO lo necesario para desarrollar
+una PINN en Python (PyTorch), incluyendo:
+  1) comandos de terminal (instalación/entorno/ejecución)
+  2) comandos/funciones clave en el código (PyTorch) y para qué sirve cada uno
+
+
+1) TERMINAL: entorno de trabajo (Linux)
+---------------------------------------
+
+1.1. Crear carpeta de proyecto
+  mkdir -p PINN_oscilador && cd PINN_oscilador
+  - mkdir: crea directorios
+  - -p: crea toda la ruta si no existe
+  - cd: entra en la carpeta
+
+1.2. Crear un entorno virtual
+  python3 -m venv .venv
+  - venv: crea un entorno aislado para paquetes (evitas conflictos)
+
+1.3. Activar el entorno
+  source .venv/bin/activate
+  - source: carga variables del entorno y activa el venv
+
+1.4. Actualizar pip
+  python -m pip install --upgrade pip
+  - instala/actualiza el gestor de paquetes
+
+1.5. Instalar dependencias mínimas
+  pip install torch matplotlib numpy
+  - torch: autodiff + redes neuronales
+  - matplotlib: gráficas
+  - numpy: utilidades numéricas (opcional; puedes usar torch en todo)
+
+  (opcional) instalar Jupyter
+    pip install jupyter
+    jupyter notebook
+  - para trabajar en notebooks
+
+1.6. Guardar dependencias (reproducibilidad)
+  pip freeze > requirements.txt
+  - crea un listado de versiones instaladas
+
+1.7. Ejecutar tu script
+  python pinn.py
+  - ejecuta el archivo principal
+
+1.8. (opcional) si usas GPU y torch detecta CUDA
+  python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+  - comprueba si hay GPU disponible
+
+
+2) CÓDIGO: “comandos”/funciones clave en una PINN (PyTorch)
+-----------------------------------------------------------
+
+2.1. Imports básicos
+  import torch
+  import torch.nn as nn
+  import torch.optim as optim
+  - torch: tensores + autodiff
+  - nn: módulos de red (capas, activaciones)
+  - optim: optimizadores (Adam, LBFGS, etc.)
+
+2.2. Selección de dispositivo (CPU/GPU)
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  - manda tensores/modelo a GPU si existe
+
+2.3. Semilla (reproducibilidad)
+  torch.manual_seed(42)
+  - fija la aleatoriedad (pesos iniciales, muestreo, etc.)
+
+2.4. Crear tensores con gradiente respecto a la entrada (MUY importante en PINNs)
+  t = torch.linspace(0, 20, 200).view(-1, 1).to(device)
+  t.requires_grad_(True)
+  - torch.linspace: genera puntos (colocation points)
+  - view(-1,1): forma columna Nx1
+  - to(device): manda a CPU/GPU
+  - requires_grad_(True): permite calcular derivadas d/dt mediante autodiff
+
+2.5. Definir la red (MLP)
+  class PINN(nn.Module):
+      def __init__(self):
+          super().__init__()
+          self.net = nn.Sequential(
+              nn.Linear(1, 50),
+              nn.Tanh(),
+              nn.Linear(50, 50),
+              nn.Tanh(),
+              nn.Linear(50, 1)
+          )
+      def forward(self, t):
+          # opcional: normalizar entrada
+          return self.net(t/20.0)
+
+  - nn.Module: clase base de modelos
+  - nn.Sequential: encadena capas
+  - nn.Linear(in, out): capa densa
+  - nn.Tanh(): activación suave (muy usada en PINNs)
+  - forward: define la pasada hacia delante
+
+2.6. Instanciar el modelo
+  model = PINN().to(device)
+  - crea la red y la manda al dispositivo
+
+2.7. Derivadas automáticas con torch.autograd.grad
+  x = model(t)  # salida x(t)
+
+  dx_dt = torch.autograd.grad(
+      outputs=x,
+      inputs=t,
+      grad_outputs=torch.ones_like(x),
+      create_graph=True
+  )[0]
+
+  d2x_dt2 = torch.autograd.grad(
+      outputs=dx_dt,
+      inputs=t,
+      grad_outputs=torch.ones_like(dx_dt),
+      create_graph=True
+  )[0]
+
+  Explicación:
+  - torch.autograd.grad: calcula derivadas ∂outputs/∂inputs
+  - grad_outputs: “vector” de pesos para el gradiente (aquí 1s)
+  - create_graph=True: conserva el grafo para poder derivar otra vez (x'')
+
+2.8. Residuo físico (tu EDO)
+  omega0 = 2.0
+  gamma  = 0.2
+
+  f = d2x_dt2 + 2*gamma*dx_dt + (omega0**2)*x
+  loss_f = torch.mean(f**2)
+
+  - f: residuo; si la EDO se cumple, f≈0
+  - loss_f: MSE del residuo (pérdida física)
+
+2.9. Condiciones iniciales (IC) como pérdida
+  t0 = torch.zeros((1,1), device=device, requires_grad=True)
+  x0 = torch.tensor([[1.0]], device=device)
+  v0 = torch.tensor([[0.0]], device=device)
+
+  x_t0 = model(t0)
+
+  dx_t0 = torch.autograd.grad(
+      outputs=x_t0,
+      inputs=t0,
+      grad_outputs=torch.ones_like(x_t0),
+      create_graph=True
+  )[0]
+
+  loss_u0 = torch.mean((x_t0 - x0)**2)
+  loss_v0 = torch.mean((dx_t0 - v0)**2)
+
+  - impones x(0)=x0 y x'(0)=v0
+  - Nota: la velocidad inicial se impone con autodiff (mejor que “t+eps”)
+
+2.10. Pérdida total (con pesos)
+  w_f, w_u0, w_v0 = 1.0, 100.0, 100.0
+  loss = w_f*loss_f + w_u0*loss_u0 + w_v0*loss_v0
+
+  - Los pesos equilibran escalas (no hay regla única; se ajustan)
+
+2.11. Optimizador (Adam)
+  optimizer = optim.Adam(model.parameters(), lr=1e-3)
+  - model.parameters(): devuelve todos los pesos entrenables
+  - Adam: robusto para empezar
+
+2.12. Bucle de entrenamiento (pasos clave)
+  for epoch in range(5000):
+      optimizer.zero_grad()     # (1) limpia gradientes acumulados
+      loss = ...                # (2) calcula pérdida
+      loss.backward()           # (3) backprop: gradientes dLoss/dθ
+      optimizer.step()          # (4) actualiza parámetros
+
+      if epoch % 500 == 0:
+          print(epoch, loss.item())
+
+  - zero_grad: torch acumula gradientes; hay que ponerlos a 0 cada iteración
+  - backward: deriva la pérdida respecto a pesos (autodiff)
+  - step: aplica la actualización del optimizador
+  - loss.item(): saca el escalar a Python
+
+2.13. (Opcional) Refinamiento con L-BFGS (a veces mejora mucho)
+  optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=500)
+
+  def closure():
+      optimizer.zero_grad()
+      loss = ...
+      loss.backward()
+      return loss
+
+  optimizer.step(closure)
+
+  - LBFGS usa una “closure” porque evalúa la función varias veces por iteración
+  - En PINNs, a menudo: primero Adam, luego LBFGS para afinar
+
+2.14. Evaluación y predicción
+  t_test = torch.linspace(0,20,1000).view(-1,1).to(device)
+  with torch.no_grad():
+      x_pred = model(t_test)
+
+  - torch.no_grad(): desactiva gradientes (más rápido y menos memoria)
+
+2.15. Pasar a NumPy para graficar
+  t_np = t_test.cpu().numpy()
+  x_np = x_pred.cpu().numpy()
+  - cpu(): asegura que está en CPU
+  - numpy(): convierte a array de NumPy
+
+2.16. Guardar y cargar el modelo
+  torch.save(model.state_dict(), "pinn.pt")
+  - guarda pesos (recomendado)
+
+  model2 = PINN().to(device)
+  model2.load_state_dict(torch.load("pinn.pt", map_location=device))
+  model2.eval()
+  - load_state_dict: carga pesos
+  - eval(): modo evaluación (importante si hubiera dropout/batchnorm)
+
+2.17. Puntos de colocation (mejor práctica)
+  En vez de usar siempre linspace fijo, puedes muestrear aleatorio:
+    t = 20*torch.rand((N,1), device=device)
+    t.requires_grad_(True)
+
+  - mejora la cobertura del dominio y evita “overfitting” a una rejilla
+
+
+3) CHECKLIST mínima de una PINN (para no olvidarte nada)
+--------------------------------------------------------
+[ ] t (o x,y,t) con requires_grad_(True) para derivadas
+[ ] calcular x_pred = model(t)
+[ ] obtener derivadas con autograd.grad (create_graph=True)
+[ ] construir el residuo físico f(·)
+[ ] loss_f = mean(f^2)
+[ ] pérdidas IC/BC: loss_u0, loss_v0, ...
+[ ] loss total (pesos)
+[ ] optimizer: zero_grad → loss.backward → step
+[ ] evaluar con torch.no_grad
+[ ] comparar con solución analítica si existe
+
+
+4) Mini-esqueleto de archivo pinn.py (referencia rápida)
+--------------------------------------------------------
+(Esto NO es un script completo, es el “esqueleto mental”)
+
+  - imports
+  - device + seed
+  - definir modelo PINN(nn.Module)
+  - definir función loss_total():
+      - crear/usar colocation points t (requires_grad)
+      - forward
+      - grad x', x''
+      - residuo f
+      - loss_f, loss_IC/BC
+      - return loss
+  - optimizador
+  - training loop
+  - evaluación + plot
+  - save/load opcional
+
+
+5) Nota directa sobre tu código actual (NumPy)
+----------------------------------------------
+Tu enfoque de:
+  - derivadas con np.gradient
+  - gradientes respecto a pesos con diferencias finitas
+funciona “conceptualmente”, pero es extremadamente lento e impreciso.
+
+Una PINN “bien”:
+  - autodiff para derivadas de la física (x', x'')
+  - autodiff para gradientes respecto a pesos (backprop)
+y eso, en práctica, se hace con PyTorch/JAX/TensorFlow.
+
+Fin.

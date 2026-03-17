@@ -1,0 +1,24 @@
+# Extensiones de sistema y carpetas ocultas
+.afirma/
+.android/
+.vscode/
+.cache/
+.local/
+*.tmp
+
+# Archivos de configuración de Linux
+.bash*
+.profile
+.python_history
+
+# Python y Ciencia de Datos
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# LaTeX (Para que no se suban los auxiliares del CV)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
